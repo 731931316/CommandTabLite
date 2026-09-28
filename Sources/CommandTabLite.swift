@@ -218,8 +218,9 @@ final class SwitcherPanel: NSPanel {
         }
         let title = NSTextField(labelWithString: "")
         title.alignment = .center
-        title.font = .systemFont(ofSize: 14)
-        title.textColor = NSColor(calibratedWhite: 0.45, alpha: 1)
+        // Medium-weight, high-contrast text remains readable over the translucent HUD background.
+        title.font = .systemFont(ofSize: 15, weight: .medium)
+        title.textColor = NSColor(calibratedWhite: 0.08, alpha: 1)
         title.lineBreakMode = .byTruncatingMiddle
         root.addSubview(title)
         selectedTitle = title
@@ -239,7 +240,11 @@ final class SwitcherPanel: NSPanel {
         title.stringValue = candidates[selectedIndex].displayName
         let titleWidth = min(max(card.frame.width, title.intrinsicContentSize.width + 8), root.bounds.width - 8)
         let titleX = min(max(4, card.frame.midX - titleWidth / 2), root.bounds.width - titleWidth - 4)
-        title.frame = NSRect(x: titleX, y: card.frame.maxY + 3, width: titleWidth, height: 20)
+        // Align the native text field to backing pixels even when candidate cards are scaled.
+        title.frame = root.backingAlignedRect(
+            NSRect(x: titleX, y: card.frame.maxY + 3, width: titleWidth, height: 20),
+            options: .alignAllEdgesNearest
+        )
     }
 }
 

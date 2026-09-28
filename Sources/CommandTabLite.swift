@@ -186,7 +186,7 @@ final class SwitcherPanel: NSPanel {
 
         let root = SwitcherContentView(frame: NSRect(x: 0, y: 0, width: width, height: height))
         let effect = NSVisualEffectView(frame: root.bounds)
-        effect.material = .popover
+        effect.material = .hudWindow
         effect.blendingMode = .behindWindow
         effect.state = .active
         effect.appearance = NSAppearance(named: .aqua)
@@ -197,10 +197,10 @@ final class SwitcherPanel: NSPanel {
             return true
         }
         root.addSubview(effect)
-        // The native switcher uses a brighter white tint than AppKit's popover material alone.
+        // A subtle dark tint brings AppKit's HUD material close to the native switcher over wallpaper.
         let tint = NSView(frame: root.bounds)
         tint.wantsLayer = true
-        tint.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.45).cgColor
+        tint.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.15).cgColor
         tint.layer?.cornerRadius = 24
         root.addSubview(tint)
         cards = []

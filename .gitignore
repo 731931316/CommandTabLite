@@ -1,0 +1,8 @@
+.DS_Store
+CommandTabLite.app/
+*.dSYM/
+*.xcarchive/
+*.xcresult/
+*.ipa
+*.zip
+*.dmg

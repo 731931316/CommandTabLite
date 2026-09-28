@@ -1,0 +1,47 @@
+# 轻跃
+
+![轻跃图标](Assets/AppIcon-source.png)
+
+轻跃是一款轻量的 macOS 程序与窗口切换器。它常驻菜单栏，提供接近系统 Command+Tab 的候选卡交互，同时允许你决定哪些程序参与切换，以及是否将一个程序的多个窗口拆成独立候选项。
+
+## 功能
+
+- 默认使用 **Control+Tab**；可在设置中改为 **Command+Tab**，接管系统原有的程序切换快捷键。
+- 按住快捷键的修饰键、重复按主键选择候选项，松开修饰键确认切换；按 Shift 反向选择。
+- 鼠标悬浮时移动选中卡，点击候选项确认，点击候选框外取消。
+- 在中文设置页为正在运行的程序选择「始终显示」「仅有窗口时显示」或「不参与切换」。规则按程序保存，重启后继续生效；轻跃自身始终不参与切换。
+- 可为每个程序开启「按窗口拆分」。开启后，每个窗口单独作为候选项和排序单位。
+- 候选项从左到右依次为普通窗口、最小化窗口、无窗口程序；各组按最近使用的程序顺序排列，同一程序的拆分窗口按其窗口顺序排列。支持唤起最小化窗口，以及重新打开仍在运行但没有窗口的程序。
+- 可选择登录 Mac 时自动启动。
+
+## 构建与安装
+
+需要 macOS 13 或更新版本，以及 Xcode Command Line Tools。当前项目以本地构建方式提供源码，尚未发布经过公证的安装包。
+
+```sh
+git clone https://github.com/731931316/CommandTabLite.git
+cd CommandTabLite
+./build.sh
+ditto "轻跃.app" "/Applications/轻跃.app"
+open "/Applications/轻跃.app"
+```
+
+`build.sh` 会在项目根目录生成 `轻跃.app`，并使用临时签名。首次运行时，请在「系统设置 → 隐私与安全性 → 辅助功能」中允许轻跃。重新构建或移动应用后，macOS 可能要求重新授权。
+
+轻跃是菜单栏程序，不会显示普通 Dock 窗口。点击菜单栏中的 `⌘⇥` 图标，再选择 **Settings…** 打开中文设置页；菜单也提供 **Enable shortcut**、**Disable shortcut** 和 **Quit**。
+
+## Command+Tab 与恢复
+
+在设置中选择 Command+Tab 时，轻跃会关闭系统对应的切换快捷键，再注册自己的快捷键。改用其他快捷键或正常退出轻跃时，程序会尝试恢复系统快捷键。
+
+如果程序意外退出后系统 Command+Tab 未恢复，可在终端运行：
+
+```sh
+"/Applications/轻跃.app/Contents/MacOS/CommandTabLite" --restore-system-shortcuts
+```
+
+接管过程使用 macOS 的 **SkyLight 私有 API**，系统更新可能影响其行为。这份源码和构建脚本面向本地使用；当前版本不适合直接提交 Mac App Store。
+
+## 致谢与许可
+
+快捷键接管思路参考了开源项目 [AltTab](https://github.com/lwouis/alt-tab-macos)。轻跃采用 [MIT 许可证](LICENSE)。

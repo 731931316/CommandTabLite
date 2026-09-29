@@ -1,5 +1,7 @@
 # 轻跃
 
+简体中文 | [English](README.en.md)
+
 ![轻跃图标](Assets/AppIcon-source.png)
 
 轻跃是一款轻量的 macOS 程序与窗口切换器。它常驻菜单栏，提供接近系统 Command+Tab 的候选卡交互，同时允许你决定哪些程序参与切换，以及是否将一个程序的多个窗口拆成独立候选项。

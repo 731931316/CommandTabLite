@@ -9,6 +9,6 @@ cp "$project_dir/Info.plist" "$bundle/Contents/Info.plist"
 cp "$project_dir/Assets/AppIcon.icns" "$bundle/Contents/Resources/AppIcon.icns"
 swiftc -O -framework AppKit -framework Carbon -framework ApplicationServices -framework ServiceManagement \
   "$project_dir"/Sources/*.swift -o "$bundle/Contents/MacOS/CommandTabLite"
-# SMAppService requires a signed app; ad-hoc signing supports this local build.
-codesign --force --sign - "$bundle"
+# Reuse a development identity for stable application identity; default to ad-hoc for source-only builds.
+codesign --force --sign "${CODE_SIGN_IDENTITY:--}" "$bundle"
 printf 'Built %s\n' "$bundle"

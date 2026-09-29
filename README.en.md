@@ -17,6 +17,7 @@ Qingyue is a lightweight application and window switcher for macOS. It runs in t
 - **Show only when windows exist** requires at least one window that has not been closed. Minimized windows count as existing windows. These rules apply to all applications.
 - Entries are ordered from left to right: non-minimized windows, minimized windows, then applications without windows. Within each group, applications follow their recent usage order; split windows from the same application retain their window order. Qingyue can restore minimized windows and request that a running application reopen a window when none remain.
 - Optionally launch automatically when you log in to your Mac.
+- The login toggle reads existing system login items and avoids duplicate registration. Additional copies of Qingyue exit before taking over shortcuts. If Accessibility access is unavailable at startup, Qingyue retries automatically after permission is granted. Explicitly disabling the shortcut prevents automatic re-enabling during that session.
 
 ## Build and install
 
@@ -31,6 +32,10 @@ open "/Applications/轻跃.app"
 ```
 
 `build.sh` creates `轻跃.app` in the project root and applies an ad hoc signature. On first launch, allow Qingyue in **System Settings → Privacy & Security → Accessibility**. macOS may require you to grant access again after rebuilding or moving the application.
+
+For local development, reuse a signing certificate with `CODE_SIGN_IDENTITY="certificate name or SHA-1" ./build.sh`. Keeping the same certificate and installation path reduces permission churn caused by ad hoc signatures. Switching certificates may still require authorization. Development signing is not a notarized Developer ID release.
+
+Legacy login items are detected through the public but deprecated `LSSharedFileList` compatibility API; new registrations use `SMAppService`. An incomplete login-item read produces a warning instead of blindly adding another registration.
 
 Qingyue runs in the menu bar and does not have a regular Dock icon. Click the `⌘⇥` menu bar icon and choose **Settings…** to open the Chinese settings interface. The menu also includes **Enable shortcut**, **Disable shortcut**, and **Quit**.
 

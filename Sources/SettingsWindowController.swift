@@ -165,10 +165,12 @@ final class SettingsWindowController: NSWindowController, NSTableViewDataSource,
     /// Displays system registration rather than assuming a saved checkbox is effective.
     private func refreshLoginStatus(clearError: Bool = true) {
         if clearError { launchAtLogin.refresh() }
-        loginToggle.state = launchAtLogin.isEnabled || launchAtLogin.requiresApproval ? .on : .off
+        loginToggle.allowsMixedState = launchAtLogin.isStatusUnknown
+        loginToggle.state = launchAtLogin.isStatusUnknown ? .mixed
+            : (launchAtLogin.isEnabled || launchAtLogin.requiresApproval ? .on : .off)
         loginStatus.stringValue = launchAtLogin.errorDescription ?? launchAtLogin.statusText
         loginStatus.textColor = launchAtLogin.errorDescription == nil ? .secondaryLabelColor : .systemRed
-        loginSettingsButton.isHidden = !launchAtLogin.requiresApproval
+        loginSettingsButton.isHidden = !launchAtLogin.requiresApproval && !launchAtLogin.isStatusUnknown
     }
 
     /// Registers or unregisters only in response to the user's checkbox change.

@@ -262,12 +262,25 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     /// Menu item displaying the currently saved shortcut.
     private var shortcutMenuItem: NSMenuItem!
+    /// Polls for permission recovery without repeatedly prompting or registering an active shortcut.
+    private var recoveryTimer: Timer?
+    /// Records explicit menu intent so automatic recovery respects "Disable shortcut".
+    private var wantsShortcut = true
+    /// Bounds retries after registration failures while Accessibility is available.
+    private var nextRetry = Date.distantPast
+    /// Exponential backoff between failed registrations, capped at thirty seconds.
+    private var retryDelay: TimeInterval = 2
 
     /// Creates UI, requests Accessibility permission, then attempts safe takeover.
     func applicationDidFinishLaunching(_ notification: Notification) {
         hotkeys = HotkeyController(panel: panel, catalog: catalog)
         settings = SettingsWindowController(catalog: catalog, hotkeys: hotkeys)
-        settings.onShortcutChanged = { [weak self] in self?.refreshShortcutMenu() }
+        settings.onShortcutChanged = { [weak self] in
+            // Applying a shortcut explicitly enables it, including subsequent automatic recovery.
+            self?.wantsShortcut = true
+            self?.nextRetry = .distantPast
+            self?.refreshShortcutMenu()
+        }
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.title = "⌘⇥"
         let menu = NSMenu()
@@ -282,14 +295,40 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.menu = menu
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
         _ = AXIsProcessTrustedWithOptions(options)
-        if !hotkeys.start() {
-            log.warning("Takeover inactive; retry from the menu after granting Accessibility permission")
+        recoverShortcutIfNeeded()
+        recoveryTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+            self?.recoverShortcutIfNeeded()
         }
+        recoveryTimer?.tolerance = 0.5
     }
 
     /// Restores native switching before the application terminates normally.
     func applicationWillTerminate(_ notification: Notification) {
+        recoveryTimer?.invalidate()
         hotkeys.stop()
+    }
+
+    /// Restores takeover after permission becomes available, with bounded registration retries.
+    private func recoverShortcutIfNeeded() {
+        guard wantsShortcut else { return }
+        guard AXIsProcessTrusted() else {
+            if hotkeys.isEnabled {
+                log.warning("Accessibility access lost; restoring system shortcut while waiting")
+                hotkeys.stop()
+            }
+            nextRetry = .distantPast
+            retryDelay = 2
+            return
+        }
+        guard !hotkeys.isEnabled, Date() >= nextRetry else { return }
+        if hotkeys.start() {
+            retryDelay = 2
+            log.info("Saved shortcut enabled after startup or permission recovery")
+        } else {
+            nextRetry = Date().addingTimeInterval(retryDelay)
+            retryDelay = min(retryDelay * 2, 30)
+            log.warning("Shortcut registration unavailable; automatic retry scheduled")
+        }
     }
 
     /// Opens the per-application settings window.
@@ -302,11 +341,17 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Retries takeover after permission is granted.
     @objc private func enable() {
-        if !hotkeys.start() { NSSound.beep() }
+        wantsShortcut = true
+        nextRetry = .distantPast
+        recoverShortcutIfNeeded()
+        if !hotkeys.isEnabled { NSSound.beep() }
     }
 
     /// Restores system shortcuts and disables the replacement handlers.
-    @objc private func restore() { hotkeys.stop() }
+    @objc private func restore() {
+        wantsShortcut = false
+        hotkeys.stop()
+    }
 
     /// Quits through the regular lifecycle so restoration runs first.
     @objc private func quit() { NSApp.terminate(nil) }
@@ -325,9 +370,11 @@ private enum CommandTabLiteMain {
     /// Keeps the delegate alive for the complete AppKit event loop.
     static func main() {
         if CommandLine.arguments.contains("--restore-system-shortcuts") { restoreFromCommandLine() }
+        let instance = SingleInstanceGuard()
+        guard instance.acquire() else { return }
         let application = NSApplication.shared
         let delegate = AppDelegate()
         application.delegate = delegate
-        withExtendedLifetime(delegate) { application.run() }
+        withExtendedLifetime((delegate, instance)) { application.run() }
     }
 }

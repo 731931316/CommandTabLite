@@ -1,92 +1,140 @@
 import Foundation
+import CoreServices
 import OSLog
 import ServiceManagement
 
-/// Manages the main application's login item through the system's persistent registration.
+/// Combines modern registration with legacy login items left by earlier installations.
 final class LaunchAtLoginController {
-    /// The main bundle's login item; its status remains authoritative across application launches.
+    /// New registrations always use Apple's current service management API.
     private let service = SMAppService.mainApp
-    /// Last operation failure presented in the settings window, without exposing system paths.
+    /// Retained legacy list and matching items from the latest successful system read.
+    private var legacyList: LSSharedFileList?
+    /// Entries positively identified as belonging to this application.
+    private var legacyItems: [LSSharedFileListItem] = []
+    /// An incomplete legacy read must never be interpreted as an empty login item list.
+    private var legacyReadFailed = false
+    /// Last operation failure presented without exposing system paths.
     private(set) var errorDescription: String?
 
-    /// Whether macOS currently allows the application to launch when the user logs in.
-    var isEnabled: Bool { service.status == .enabled }
+    /// Loads existing registrations before the first settings presentation.
+    init() { refresh() }
 
-    /// Whether registration exists but still needs the user's approval in System Settings.
+    /// Legacy session login entries launch automatically even when SMAppService reports unregistered.
+    var isEnabled: Bool {
+        service.status != .requiresApproval && (service.status == .enabled || !legacyItems.isEmpty)
+    }
+
+    /// Pending system approval takes precedence because the same entry can appear in both APIs.
     var requiresApproval: Bool { service.status == .requiresApproval }
 
-    /// Explains the actual system registration state in the settings window.
+    /// Allows the UI to display an indeterminate state instead of falsely reporting disabled.
+    var isStatusUnknown: Bool { legacyReadFailed && !isEnabled && !requiresApproval }
+
+    /// Explains the combined registration state rather than a locally saved preference.
     var statusText: String {
+        if isEnabled { return "已开启：登录 Mac 后自动启动" }
+        if requiresApproval { return "需要在系统设置的“登录项”中允许启动" }
+        if legacyReadFailed { return "暂时无法完整读取登录项，请在系统设置中检查" }
         switch service.status {
-        case .enabled:
-            return "已开启：登录 Mac 后自动启动"
-        case .notRegistered:
-            return "未开启"
-        case .requiresApproval:
-            return "需要在系统设置的“登录项”中允许启动"
-        case .notFound:
-            return "尚未找到自启动记录，可勾选尝试开启"
-        @unknown default:
-            return "暂时无法读取登录项状态"
+        case .notRegistered, .notFound: return "未开启"
+        case .enabled: return "已开启：登录 Mac 后自动启动"
+        case .requiresApproval: return "需要在系统设置的“登录项”中允许启动"
+        @unknown default: return "暂时无法读取登录项状态"
         }
     }
 
-    /// Applies an explicit user choice and reports whether the system accepted the request.
+    /// Reads only this user's legacy login items using the deprecated public compatibility API.
+    private func readLegacyItems() {
+        legacyItems = []
+        legacyList = nil
+        legacyReadFailed = false
+        guard let list = LSSharedFileListCreate(nil, kLSSharedFileListSessionLoginItems.takeUnretainedValue(), nil)?.takeRetainedValue(),
+              let snapshot = LSSharedFileListCopySnapshot(list, nil)?.takeRetainedValue() else {
+            legacyReadFailed = true
+            log.warning("Unable to read legacy login item list")
+            return
+        }
+        legacyList = list
+        let currentURL = Bundle.main.bundleURL.standardizedFileURL.resolvingSymlinksInPath()
+        let identifier = Bundle.main.bundleIdentifier
+        // Avoid disk mounting and user interaction while resolving registrations.
+        let flags = LSSharedFileListResolutionFlags(kLSSharedFileListDoNotMountVolumes | kLSSharedFileListNoUserInteraction)
+        for item in snapshot as! [LSSharedFileListItem] {
+            var resolutionError: Unmanaged<CFError>?
+            guard let resolved = LSSharedFileListItemCopyResolvedURL(item, flags, &resolutionError)?.takeRetainedValue() else {
+                _ = resolutionError?.takeRetainedValue()
+                legacyReadFailed = true
+                continue
+            }
+            let url = (resolved as URL).standardizedFileURL.resolvingSymlinksInPath()
+            let sameIdentifier = identifier != nil && Bundle(url: url)?.bundleIdentifier == identifier
+            // Never match names: another application may have the same display name.
+            if sameIdentifier || url == currentURL { legacyItems.append(item) }
+        }
+        log.debug("Legacy login items read: matching=\(self.legacyItems.count), incomplete=\(self.legacyReadFailed)")
+    }
+
+    /// Applies an explicit user choice without creating a second registration.
     @discardableResult
     func setEnabled(_ enabled: Bool) -> Bool {
-        errorDescription = nil
-        let previousStatus = service.status
-        // A pending registration must be approved by the user, rather than registered again.
-        if enabled && (previousStatus == .enabled || previousStatus == .requiresApproval) {
-            log.debug("Login item already registered; status=\(previousStatus.rawValue)")
+        refresh()
+        if enabled && (isEnabled || requiresApproval) {
+            log.debug("Login item already exists; registration skipped")
             return true
         }
-        if !enabled && (previousStatus == .notRegistered || previousStatus == .notFound) {
-            log.debug("Login item is already disabled; status=\(previousStatus.rawValue)")
-            return true
+        // Unknown entries could include this application; refuse a blind registration or cleanup.
+        guard !legacyReadFailed else {
+            errorDescription = "无法完整读取现有登录项，请先在系统设置的“登录项”中检查"
+            log.warning("Login item update blocked because system enumeration is incomplete")
+            return false
         }
         do {
             if enabled {
                 try service.register()
             } else {
-                try service.unregister()
+                // Remove only positively identified entries belonging to this application.
+                if let list = legacyList {
+                    for item in legacyItems {
+                        let result = LSSharedFileListItemRemove(list, item)
+                        guard result == noErr else {
+                            throw NSError(domain: NSOSStatusErrorDomain, code: Int(result))
+                        }
+                    }
+                }
+                if service.status == .enabled || service.status == .requiresApproval {
+                    try service.unregister()
+                }
             }
-            let currentStatus = service.status
-            log.info("Login item preference updated: requested=\(enabled), status=\(currentStatus.rawValue)")
-            if currentStatus == .requiresApproval {
-                log.warning("Login item needs approval in System Settings")
-            }
-            // Re-read macOS status; never display a local preference as successful registration.
-            let accepted = enabled
-                ? currentStatus == .enabled || currentStatus == .requiresApproval
-                : currentStatus == .notRegistered || currentStatus == .notFound
+            readLegacyItems()
+            let accepted = enabled ? isEnabled || requiresApproval
+                : !legacyReadFailed && !isEnabled && !requiresApproval
             if !accepted {
-                errorDescription = "系统尚未应用开机自启动设置，请稍后重试"
+                errorDescription = "系统尚未应用开机自启动设置，请在系统设置中检查"
                 log.warning("Login item status does not match requested preference")
             }
+            log.info("Login item preference updated: requested=\(enabled), accepted=\(accepted)")
             return accepted
         } catch {
+            // A partial removal or pending approval must be reflected immediately in the UI.
+            readLegacyItems()
             let systemError = error as NSError
             log.error("Login item update failed: domain=\(systemError.domain, privacy: .public), code=\(systemError.code)")
-            if service.status == .requiresApproval && enabled {
-                // macOS can return a denied error while retaining a registration awaiting consent.
-                log.warning("Login item registration awaits user approval")
-                return true
-            }
+            if enabled && (isEnabled || requiresApproval) { return true }
             errorDescription = enabled
                 ? "无法开启开机自启动，请检查应用签名及系统设置中的登录项"
-                : "无法关闭开机自启动，请在系统设置的“登录项”中检查"
+                : "无法完全关闭开机自启动，请在系统设置的“登录项”中检查"
             return false
         }
     }
 
-    /// Discards stale operation errors when reopening settings; all status values are read live.
+    /// Refreshes both registration sources whenever settings becomes active.
     func refresh() {
         errorDescription = nil
+        readLegacyItems()
         log.debug("Refreshed login item status: \(self.service.status.rawValue)")
     }
 
-    /// Opens Apple's login items panel after the user chooses to review the required approval.
+    /// Opens Apple's login items panel for approval or manual inspection.
     func openSystemSettings() {
         log.info("Opening System Settings for login item approval")
         SMAppService.openSystemSettingsLoginItems()

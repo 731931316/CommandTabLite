@@ -213,7 +213,10 @@ final class SettingsWindowController: NSWindowController, NSTableViewDataSource,
 
     /// Rebuilds the visible list without discarding saved rules for closed applications.
     private func reloadApplications() {
-        applications = catalog.runningApplications().sorted { ($0.localizedName ?? "").localizedCaseInsensitiveCompare($1.localizedName ?? "") == .orderedAscending }
+        // Settings share one saved rule per bundle, even when automation starts another process.
+        applications = ApplicationCatalog.uniqueApplications(catalog.runningApplications()).sorted {
+            ($0.localizedName ?? "").localizedCaseInsensitiveCompare($1.localizedName ?? "") == .orderedAscending
+        }
         table.reloadData()
     }
 

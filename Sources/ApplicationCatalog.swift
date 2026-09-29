@@ -307,7 +307,7 @@ final class ApplicationCatalog {
         recentBundleIDs.insert(id, at: 0)
     }
 
-    /// Returns user-facing running applications, including ones hidden by their saved rule.
+    /// Returns all eligible processes; window collection must retain every process of an application.
     func runningApplications() -> [NSRunningApplication] {
         let ownPID = ProcessInfo.processInfo.processIdentifier
         let ownID = Bundle.main.bundleIdentifier
@@ -368,7 +368,45 @@ final class ApplicationCatalog {
             // If focused-window information is unavailable, keep only real window candidates.
             return result
         }
-        return Self.prioritizeOpenWindows(snapshot)
+        return Self.prioritizeOpenWindows(Self.consolidateProcesses(snapshot))
+    }
+
+    /// Groups processes by the same identifier used to persist application rules.
+    private static func applicationKey(_ app: NSRunningApplication) -> String {
+        app.bundleIdentifier.map { "bundle:\($0)" } ?? "pid:\(app.processIdentifier)"
+    }
+
+    /// Returns one settings row per application without removing processes from window collection.
+    static func uniqueApplications(_ applications: [NSRunningApplication]) -> [NSRunningApplication] {
+        var seen = Set<String>()
+        return applications.filter { seen.insert(applicationKey($0)).inserted }
+    }
+
+    /// Merges process-level candidates while retaining the owner of every split window.
+    static func consolidateProcesses(_ candidates: [SwitcherCandidate]) -> [SwitcherCandidate] {
+        var groups: [String: [SwitcherCandidate]] = [:]
+        var order: [String] = []
+        for candidate in candidates {
+            let key = applicationKey(candidate.application)
+            if groups[key] == nil { order.append(key) }
+            groups[key, default: []].append(candidate)
+        }
+        let result = order.flatMap { key -> [SwitcherCandidate] in
+            let group = groups[key]!
+            let windows = group.filter { $0.window != nil }
+            // Split applications show real windows from every process, without empty-process placeholders.
+            if !windows.isEmpty { return windows }
+            // App-level entries prefer a process with an expanded window, then a minimized window.
+            // When all processes are windowless, keep one entry for the saved "always" policy.
+            let representative = group.dropFirst().reduce(group[0]) { best, candidate in
+                if candidate.priority.rawValue < best.priority.rawValue { return candidate }
+                if candidate.priority == best.priority && candidate.isCurrent { return candidate }
+                return best
+            }
+            return [representative]
+        }
+        log.debug("Consolidated process candidates: \(candidates.count) entries into \(result.count) application/window candidates")
+        return result
     }
 
     /// Stably partitions individual candidates into three priorities without changing their intra-group order.

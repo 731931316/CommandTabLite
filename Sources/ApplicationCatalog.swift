@@ -279,6 +279,15 @@ final class ApplicationCatalog {
     /// Observer retained while the catalog tracks foreground application changes.
     private var activationObserver: NSObjectProtocol?
 
+    /// Window and application usage share one clock so split entries can interleave across apps.
+    private let recency = CandidateRecency()
+    /// Observes focus changes in the foreground process without subscribing to every background app.
+    private var focusObserver: AXObserver?
+    /// Process currently connected to the focus observer.
+    private var observedPID: pid_t?
+    /// Retries after permission recovery and covers applications that omit focus notifications.
+    private var focusTimer: Timer?
+
     /// Initializes settings and begins observing application activation order.
     init(ruleStore: RuleStore = RuleStore()) {
         self.ruleStore = ruleStore
@@ -291,11 +300,21 @@ final class ApplicationCatalog {
             guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
                   let id = app.bundleIdentifier else { return }
             self?.recordActivation(id)
+            self?.observeForegroundFocus()
         }
+        observeForegroundFocus()
+        focusTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            self?.observeForegroundFocus()
+        }
+        focusTimer?.tolerance = 0.1
     }
 
     /// Removes the workspace observer when this catalog is released.
     deinit {
+        focusTimer?.invalidate()
+        if let focusObserver {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(focusObserver), .commonModes)
+        }
         if let activationObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(activationObserver)
         }
@@ -305,6 +324,38 @@ final class ApplicationCatalog {
     private func recordActivation(_ id: String) {
         recentBundleIDs.removeAll { $0 == id }
         recentBundleIDs.insert(id, at: 0)
+    }
+
+    /// Samples actual foreground focus; merely highlighting a candidate never changes usage history.
+    private func observeForegroundFocus() {
+        guard AXIsProcessTrusted(), let app = NSWorkspace.shared.frontmostApplication,
+              app.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return }
+        let pid = app.processIdentifier
+        if observedPID != pid || focusObserver == nil {
+            if let focusObserver {
+                CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(focusObserver), .commonModes)
+            }
+            focusObserver = nil
+            observedPID = pid
+            var observer: AXObserver?
+            let status = AXObserverCreate(pid, { _, _, _, context in
+                guard let context else { return }
+                let catalog = Unmanaged<ApplicationCatalog>.fromOpaque(context).takeUnretainedValue()
+                catalog.observeForegroundFocus()
+            }, &observer)
+            if status == .success, let observer {
+                let element = AXUIElementCreateApplication(pid)
+                AXUIElementSetMessagingTimeout(element, 0.15)
+                let result = AXObserverAddNotification(observer, element, kAXFocusedWindowChangedNotification as CFString,
+                    Unmanaged.passUnretained(self).toOpaque())
+                if result != .success {
+                    log.debug("Focus notification unavailable; using sampling: pid=\(pid), AX error=\(result.rawValue)")
+                }
+                focusObserver = observer
+                CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
+            }
+        }
+        recency.record(app: app, window: focusedWindow(of: app))
     }
 
     /// Returns all eligible processes; window collection must retain every process of an application.
@@ -325,6 +376,7 @@ final class ApplicationCatalog {
 
     /// Builds one snapshot in normal, minimized, then windowless priority while preserving ties.
     func candidates() -> [SwitcherCandidate] {
+        observeForegroundFocus()
         let frontPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
         let snapshot = runningApplications().flatMap { app -> [SwitcherCandidate] in
             let bundleID = app.bundleIdentifier ?? ""
@@ -334,6 +386,7 @@ final class ApplicationCatalog {
             // Read each application's window list once for filtering, splitting, and ordering.
             let inventory = Self.windowInventory(of: app)
             let windows = inventory.windows
+            if let windows { recency.pruneWindows(of: app, keeping: windows, complete: inventory.isComplete) }
             if rule == .withWindow, windows?.isEmpty != false { return [] }
             let appName = app.localizedName ?? bundleID
             let isFront = app.processIdentifier == frontPID
@@ -368,7 +421,10 @@ final class ApplicationCatalog {
             // If focused-window information is unavailable, keep only real window candidates.
             return result
         }
-        return Self.prioritizeOpenWindows(Self.consolidateProcesses(snapshot))
+        // Sort after merging processes, otherwise merging would regroup recently used windows by app.
+        let candidates = Self.consolidateProcesses(snapshot)
+        recency.prune(among: NSWorkspace.shared.runningApplications)
+        return recency.sorted(candidates)
     }
 
     /// Groups processes by the same identifier used to persist application rules.
